@@ -29,6 +29,10 @@
 #define POS8_9 530
 #define POS9_10 533
 
+#define BTN_LONG_TIME 200
+#define BTN_TIMEOUT 1000
+#define BTN_DEBOUNCE 50
+
 MPU6050 mpu;
 // MPU control/status vars
 bool dmpReady = false;  // set true if DMP init was successful
@@ -90,6 +94,32 @@ void ICACHE_RAM_ATTR wheel_high()
 	}
 }
 
+unsigned int btn_last = 0;
+unsigned int btn_pressed_time = 0;
+unsigned int btn_count = 0;
+unsigned int btn_press;
+
+void ICACHE_RAM_ATTR btn_func()
+{
+	unsigned int now = millis();
+	if (now - btn_last < BTN_DEBOUNCE) return;
+	bool state = digitalRead(BTN_PIN);
+	if (!state)
+	{
+		btn_pressed_time = now;
+	}
+	else
+	{
+		if (btn_count < sizeof(btn_press) * 8)
+		{
+			if (now - btn_pressed_time > BTN_LONG_TIME)
+				btn_press |= 1 << btn_count;
+			btn_count++;
+		}
+	}
+	btn_last = now;
+}
+
 void mpu_setup()
 {
 	Wire.begin(GYRO_SDA_PIN, GYRO_SCL_PIN);
@@ -145,6 +175,7 @@ void setup()
 	pinMode(DERAILLEUR_PIN, INPUT);
 
 	pinMode(BTN_PIN, INPUT_PULLUP);
+	attachInterrupt(BTN_PIN, btn_func, CHANGE);
 }
 
 void mpu_loop()
@@ -166,7 +197,34 @@ void mpu_loop()
 		mpu.dmpGetEuler(euler, &q);
 	}
 }
-
+void btnTick()
+{
+	if (millis() - btn_last < BTN_TIMEOUT) return;
+	do{
+		if (btn_count == 1 && !(btn_press & 0x1))
+		{
+			LOG_BTN("single short\n");
+			break;
+		}
+		if (btn_count == 1 && (btn_press & 0x1))
+		{
+			LOG_BTN("single long\n");
+			break;
+		}
+		if (btn_count == 2 && !(btn_press & 0x1) && !(btn_press & 0x2))
+		{
+			LOG_BTN("double short\n");
+			break;
+		}
+		if (btn_count == 2 && (btn_press & 0x1) && (btn_press & 0x2))
+		{
+			LOG_BTN("double long\n");
+			break;
+		}
+	} while (false);
+	btn_count = 0;
+	btn_press = 0;
+}
 char getHall3()
 {
 	int pos = analogRead(DERAILLEUR_PIN);
@@ -186,11 +244,12 @@ unsigned long next;
 void loop()
 {
 	mpu_loop();
+	btnTick();
 	unsigned long now = millis();
 	//Serial.printf("%d\n", analogRead(DERAILLEUR_PIN));
 	while ((int32_t)(now - next) >= 0)
 	{
-		Serial.printf("cranks: %d\twheel: %d\ttransmission: %d\n", cranks_count/2, wheel_count/2, getHall3());
+		//Serial.printf("cranks: %d\twheel: %d\ttransmission: %d\n", cranks_count / 2, wheel_count / 2, getHall3());
 		cranks_count = 0;
 		wheel_count = 0;
 		next += SEND_TIME_MS;
