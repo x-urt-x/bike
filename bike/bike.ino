@@ -1,4 +1,3 @@
-#include <EncButton.h>
 #define EB_NO_COUNTER
 #define EB_NO_BUFFER
 #include <ESP8266WiFi.h>
@@ -29,7 +28,7 @@
 #define POS8_9 530
 #define POS9_10 533
 
-#define BTN_LONG_TIME 200
+#define BTN_LONG_TIME 400
 #define BTN_TIMEOUT 1000
 #define BTN_DEBOUNCE 50
 
@@ -56,7 +55,16 @@ void ICACHE_RAM_ATTR dmpDataReady() {
 	mpuInterrupt = true;
 }
 
-unsigned int cranks_count = 0;
+struct Data
+{
+	//Data() : cranks_count(0), wheel_count(0), pos(0) {}
+	uint16_t cranks_count;
+	uint16_t wheel_count;
+	char pos;
+	float ang1, ang2, ang3;
+};	
+int a = sizeof(Data);
+uint16_t cranks_count = 0;
 bool cranks_side = false; //false - lastc call was low. true - last call was high
 void ICACHE_RAM_ATTR cranks_low()
 {
@@ -75,7 +83,7 @@ void ICACHE_RAM_ATTR cranks_high()
 	}
 }
 
-unsigned int wheel_count = 0;
+uint16_t wheel_count = 0;
 bool wheel_side = false; //false - last call was low. true - last call was high
 void ICACHE_RAM_ATTR wheel_low()
 {
@@ -98,13 +106,13 @@ unsigned int btn_last = 0;
 unsigned int btn_pressed_time = 0;
 unsigned int btn_count = 0;
 unsigned int btn_press;
-
+bool btn_state;
 void ICACHE_RAM_ATTR btn_func()
 {
+	btn_state = digitalRead(BTN_PIN);
 	unsigned int now = millis();
 	if (now - btn_last < BTN_DEBOUNCE) return;
-	bool state = digitalRead(BTN_PIN);
-	if (!state)
+	if (!btn_state)
 	{
 		btn_pressed_time = now;
 	}
@@ -199,7 +207,7 @@ void mpu_loop()
 }
 void btnTick()
 {
-	if (millis() - btn_last < BTN_TIMEOUT) return;
+	if (!btn_state||(millis() - btn_last < BTN_TIMEOUT)) return;
 	do{
 		if (btn_count == 1 && !(btn_press & 0x1))
 		{
