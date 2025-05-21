@@ -5,7 +5,7 @@
 
 #ifdef LOG_USB_ENABLE
 
-#define LOG_MPU_ENABLE
+//#define LOG_MPU_ENABLE
 #define LOG_STARTUP_ENABLE
 //#define LOG_HALL12_ENABLE
 //#define LOG_HALL3_ENABLE
