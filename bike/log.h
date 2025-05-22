@@ -10,6 +10,7 @@
 //#define LOG_HALL12_ENABLE
 //#define LOG_HALL3_ENABLE
 #define LOG_BTN_ENABLE
+#define LOG_FS_ENABLE
 
 #endif // LOG_USB_ENABLE
 
@@ -55,6 +56,12 @@
 #define LOG_BTN(format, ...) Serial.printf(format, ##__VA_ARGS__)
 #else
 #define LOG_BTN(format, ...) ;
+#endif
+
+#ifdef LOG_FS_ENABLE
+#define LOG_FS(format, ...) Serial.printf(format, ##__VA_ARGS__)
+#else
+#define LOG_FS(format, ...) ;
 #endif
 
 

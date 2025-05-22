@@ -1,36 +1,13 @@
 #define EB_NO_COUNTER
 #define EB_NO_BUFFER
+#include "log.h"
 #include <ESP8266WiFi.h>
 #include "I2Cdev.h"
 #include "MPU6050_6Axis_MotionApps20.h"
 #include "Wire.h"
-#include "log.h"
+#include <LittleFS.h>
+#include "config.h"
 
-#define GYRO_INTERRUPT_PIN D2 // use pin 15 on ESP8266
-#define GYRO_SCL_PIN D3
-#define GYRO_SDA_PIN D1
-#define CRANKS_LOW_PIN D8
-#define CRANKS_HIGH_PIN D7
-#define WHEEL_LOW_PIN D6
-#define WHEEL_HIGH_PIN D5
-#define DERAILLEUR_PIN A0
-#define BTN_PIN D4
-
-#define SEND_TIME_MS 2000
-
-#define POS1_2 350
-#define POS2_3 430
-#define POS3_4 485
-#define POS4_5 505
-#define POS5_6 519
-#define POS6_7 523
-#define POS7_8 527
-#define POS8_9 530
-#define POS9_10 533
-
-#define BTN_LONG_TIME 400
-#define BTN_TIMEOUT 1000
-#define BTN_DEBOUNCE 50
 
 MPU6050 mpu;
 // MPU control/status vars
@@ -169,6 +146,7 @@ void setup()
 #ifdef LOG_USB_ENABLE
 	Serial.begin(115200);
 	delay(2000);
+	Serial.println();
 #endif
 	mpu_setup();
 	pinMode(CRANKS_LOW_PIN, INPUT); //cant be pulled up
@@ -184,6 +162,21 @@ void setup()
 
 	pinMode(BTN_PIN, INPUT_PULLUP);
 	attachInterrupt(BTN_PIN, btn_func, CHANGE);
+
+	if (!LittleFS.begin()) {
+		LOG_FS("error on LittleFS\n");
+		return;
+	}
+	FSInfo fs_info;
+	LittleFS.info(fs_info);
+
+	Serial.println("LittleFS:");
+	Serial.print("all: ");
+	Serial.println(fs_info.totalBytes);
+	Serial.print("used: ");
+	Serial.println(fs_info.usedBytes);
+	Serial.print("free: ");
+	Serial.println(fs_info.totalBytes - fs_info.usedBytes);
 }
 
 void mpu_loop()
