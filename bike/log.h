@@ -11,6 +11,7 @@
 //#define LOG_HALL3_ENABLE
 #define LOG_BTN_ENABLE
 #define LOG_FS_ENABLE
+#define LOG_WIFI_ENABLE
 
 #endif // LOG_USB_ENABLE
 
@@ -63,6 +64,13 @@
 #else
 #define LOG_FS(format, ...) ;
 #endif
+
+#ifdef LOG_WIFI_ENABLE
+#define LOG_WIFI(format, ...) Serial.printf(format, ##__VA_ARGS__)
+#else
+#define LOG_WIFI(format, ...) ;
+#endif
+
 
 
 #endif

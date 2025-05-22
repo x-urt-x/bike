@@ -2,12 +2,24 @@
 #define EB_NO_BUFFER
 #include "log.h"
 #include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
 #include "I2Cdev.h"
 #include "MPU6050_6Axis_MotionApps20.h"
 #include "Wire.h"
 #include <LittleFS.h>
 #include "config.h"
 
+#include "pass.h" //  define in this file SSID and PASS of ur wifi
+
+const char* ssid = SSID;
+const char* password = PASS;
+
+ESP8266WebServer server(80);
+const IPAddress local_ip(192, 168, 1, 50);
+const IPAddress gateway(192, 168, 1, 1);
+const IPAddress subnet(255, 255, 255, 0);
+const IPAddress primaryDNS(8, 8, 8, 8);
+const IPAddress secondaryDNS(8, 8, 4, 4);
 
 MPU6050 mpu;
 // MPU control/status vars
@@ -83,7 +95,7 @@ unsigned int btn_last = 0;
 unsigned int btn_pressed_time = 0;
 unsigned int btn_count = 0;
 unsigned int btn_press;
-bool btn_state;
+bool btn_state = true;
 void ICACHE_RAM_ATTR btn_func()
 {
 	btn_state = digitalRead(BTN_PIN);
@@ -140,6 +152,69 @@ void mpu_setup()
 		LOG_MPU("DMP Initialization failed (code %d)\n", devStatus);
 	}
 }
+bool fs_setup() 
+{
+	if (!LittleFS.begin()) {
+		LOG_FS("error on LittleFS\n");
+		return false;
+	}
+
+	FSInfo fs_info;
+	LittleFS.info(fs_info);
+
+	LOG_FS("LittleFS info:\n");
+	LOG_FS("Total size: %u bytes\n", fs_info.totalBytes);
+	LOG_FS("Used size: %u bytes\n", fs_info.usedBytes);
+	LOG_FS("Free space: %u bytes\n", fs_info.totalBytes - fs_info.usedBytes);
+	return true;
+}
+
+void handleRoot() {
+	server.send(200, "text/plain", "server");
+}
+
+void server_setup()
+{
+	server.begin();
+	server.on("/", handleRoot);
+	Serial.printf("HTTP server started\n");
+}
+
+void connectOrStartAP() {
+	WiFi.forceSleepWake();
+	delay(1);
+
+	WiFi.mode(WIFI_STA);
+	WiFi.config(local_ip, gateway, subnet, primaryDNS, secondaryDNS);
+	WiFi.begin(ssid, password);
+
+	unsigned long startAttempt = millis();
+	while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 10000 && btn_state)
+	{
+		LOG_WIFI(".");
+		delay(100);
+	}
+	LOG_WIFI("\n");
+	if (WiFi.status() != WL_CONNECTED || !btn_state)
+	{
+		WiFi.disconnect();
+		WiFi.mode(WIFI_AP);
+		WiFi.softAPConfig(local_ip, gateway, subnet);
+		WiFi.softAP(WIFI_SOFT_AP_SSID, WIFI_SOFT_AP_PASS);
+		LOG_WIFI("Started AP mode: IP=%s\n", WiFi.softAPIP().toString().c_str());
+	}
+	else {
+		LOG_WIFI("Connected to WiFi: IP=%s\n", WiFi.localIP().toString().c_str());
+	}
+}
+
+void turnOffWiFi() {
+	WiFi.disconnect(true);
+	WiFi.mode(WIFI_OFF);
+	WiFi.forceSleepBegin();
+	delay(1);
+	LOG_WIFI("WiFi turned off\n");
+}
 
 void setup()
 {
@@ -163,20 +238,13 @@ void setup()
 	pinMode(BTN_PIN, INPUT_PULLUP);
 	attachInterrupt(BTN_PIN, btn_func, CHANGE);
 
-	if (!LittleFS.begin()) {
-		LOG_FS("error on LittleFS\n");
-		return;
-	}
-	FSInfo fs_info;
-	LittleFS.info(fs_info);
+	if (!fs_setup()) return;
 
-	Serial.println("LittleFS:");
-	Serial.print("all: ");
-	Serial.println(fs_info.totalBytes);
-	Serial.print("used: ");
-	Serial.println(fs_info.usedBytes);
-	Serial.print("free: ");
-	Serial.println(fs_info.totalBytes - fs_info.usedBytes);
+	WiFi.mode(WIFI_OFF);
+	WiFi.forceSleepBegin();
+	delay(1);
+
+	server_setup();
 }
 
 void mpu_loop()
@@ -210,11 +278,13 @@ void btnTick()
 		if (btn_count == 1 && (btn_press & 0x1))
 		{
 			LOG_BTN("single long\n");
+			connectOrStartAP();
 			break;
 		}
 		if (btn_count == 2 && !(btn_press & 0x1) && !(btn_press & 0x2))
 		{
 			LOG_BTN("double short\n");
+			turnOffWiFi();
 			break;
 		}
 		if (btn_count == 2 && (btn_press & 0x1) && (btn_press & 0x2))
@@ -244,13 +314,14 @@ char getHall3()
 unsigned long next;
 void loop()
 {
+	server.handleClient();
 	mpu_loop();
 	btnTick();
 	unsigned long now = millis();
 	//Serial.printf("%d\n", analogRead(DERAILLEUR_PIN));
 	while ((int32_t)(now - next) >= 0)
 	{
-		//Serial.printf("cranks: %d\twheel: %d\ttransmission: %d\n", cranks_count / 2, wheel_count / 2, getHall3());
+		Serial.printf("cranks: %d\twheel: %d\ttransmission: %d\n", cranks_count / 2, wheel_count / 2, getHall3());
 		cranks_count = 0;
 		wheel_count = 0;
 		next += SEND_TIME_MS;

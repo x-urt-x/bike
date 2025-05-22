@@ -27,4 +27,7 @@
 #define BTN_TIMEOUT 1000
 #define BTN_DEBOUNCE 50
 
+#define WIFI_TIMEOUT 10000
+#define WIFI_SOFT_AP_SSID "esp_stat"
+#define WIFI_SOFT_AP_PASS "12345678"
 #endif // !CONFIG_H
