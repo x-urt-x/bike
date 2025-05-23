@@ -6,65 +6,115 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     body { font-family: sans-serif; padding: 20px; }
-    canvas { max-width: 100%; }
+    canvas { max-width: 100%; margin-bottom: 40px; }
+    label, input { margin-right: 10px; }
   </style>
 </head>
 <body>
-  <h1>Последние N секторов</h1>
-  <label>Сколько секторов загрузить: <input type="number" id="sectorCount" value="5" min="1" max="50"></label>
-  <button onclick="loadSectors()">Загрузить</button>
-  <canvas id="chart"></canvas>
+  <h1>Load Flash Data</h1>
+  <label>Forward sectors: <input type="number" id="forward" value="1" min="0" max="100"></label>
+  <label>Backwards sectors: <input type="number" id="backward" value="5" min="0" max="100"></label>
+  <button onclick="startLoading()">Load</button>
+
+  <canvas id="chart1"></canvas>
+  <canvas id="chart2"></canvas>
 
   <script>
     const SECTOR_SIZE = 4096;
-    const DATA_SIZE = 17;
-    const START_OFFSET = 4;
-    const KEY = 0xDEADBEEF;
+    const ENTRY_SIZE = 17;
+    const HEADER_SIZE = 4;
+    const FOOTER_SIZE = 8;
+    const MAX_ENTRIES = 240;
+    const SECTOR_KEY = 0xDEADBEEF;
 
-    async function loadSectors() {
-      const count = parseInt(document.getElementById('sectorCount').value);
-      const chartData = { labels: [], datasets: [
-        { label: 'ang1', data: [], borderColor: 'red' },
-        { label: 'ang2', data: [], borderColor: 'green' },
-        { label: 'ang3', data: [], borderColor: 'blue' }
-      ]};
+    let fullData = [];
 
-      for (let i = 0; i < count; i++) {
-        const response = await fetch(`/sector?i=${i}`);
-        if (!response.ok) continue;
-        const buffer = new Uint8Array(await response.arrayBuffer());
+    async function fetchSector(index) {
+      let response = await fetch(`/sector?i=${index}`);
+      if (!response.ok) return null;
+      let buffer = new Uint8Array(await response.arrayBuffer());
+      let view = new DataView(buffer.buffer);
 
-        const key = new DataView(buffer.buffer).getUint32(SECTOR_SIZE - 4, true);
-        if (key !== KEY) continue;
-
-        for (let j = 0; j < 240; j++) {
-          const offset = START_OFFSET + j * DATA_SIZE;
-          if (offset + DATA_SIZE > SECTOR_SIZE - 8) break;
-
-          const view = new DataView(buffer.buffer, offset, DATA_SIZE);
-          const cranks = view.getUint16(0, true);
-          const wheel = view.getUint16(2, true);
-          const pos = view.getInt8(4);
-          const ang1 = view.getFloat32(5, true);
-          const ang2 = view.getFloat32(9, true);
-          const ang3 = view.getFloat32(13, true);
-
-          chartData.labels.push(chartData.labels.length);
-          chartData.datasets[0].data.push(ang1);
-          chartData.datasets[1].data.push(ang2);
-          chartData.datasets[2].data.push(ang3);
+      let keyOffset = SECTOR_SIZE - 4;
+      let found = false;
+      for (let i = 0; i <= SECTOR_SIZE - 4; i += 4) {
+        if (view.getUint32(i, true) === SECTOR_KEY) {
+          keyOffset = i;
+          found = true;
+          break;
         }
       }
+      if (!found) return null;
 
-      const ctx = document.getElementById('chart').getContext('2d');
-      new Chart(ctx, {
-        type: 'line',
-        data: chartData,
-        options: {
-          responsive: true,
-          scales: { x: { display: true, title: { display: true, text: 'Измерение' } },
-                    y: { display: true, title: { display: true, text: 'Угол' } } }
+      const startTime = view.getUint32(0, true);
+      const endTime = view.getUint32(keyOffset - 4, true);
+      const duration = endTime - startTime;
+      const step = duration / MAX_ENTRIES;
+
+      let result = [];
+      for (let i = 0; i < MAX_ENTRIES; i++) {
+        let offset = HEADER_SIZE + i * ENTRY_SIZE;
+        if (offset + ENTRY_SIZE > keyOffset - 4) break;
+
+        let cranks = view.getUint16(offset, true);
+        let wheel = view.getUint16(offset + 2, true);
+        let pos = view.getInt8(offset + 4);
+        let ang1 = view.getFloat32(offset + 5, true);
+        let ang2 = view.getFloat32(offset + 9, true);
+        let ang3 = view.getFloat32(offset + 13, true);
+        let t = endTime - (MAX_ENTRIES - i - 1) * 2000;
+
+        result.push({ t, cranks, wheel, pos, ang1, ang2, ang3 });
+      }
+      return result;
+    }
+
+    async function startLoading() {
+      fullData = [];
+      let forward = parseInt(document.getElementById("forward").value);
+      let backward = parseInt(document.getElementById("backward").value);
+      for (let i = -backward; i <= forward; i++) {
+        let sector = null;
+        let attempts = 0;
+        while (!sector && attempts < 3) {
+          sector = await fetchSector(i);
+          attempts++;
         }
+        if (sector) fullData.push(...sector);
+      }
+      fullData.sort((a, b) => a.t - b.t);
+      plotGraphs();
+    }
+
+    function plotGraphs() {
+      const labels = fullData.map(d => (d.t - fullData[fullData.length - 1].t) / 1000);
+      const crankRate = fullData.map((d, i, arr) => i > 0 ? (d.cranks - arr[i - 1].cranks) / 2 : 0);
+      const wheelRate = fullData.map((d, i, arr) => i > 0 ? (d.wheel - arr[i - 1].wheel) / 2 : 0);
+      const pos = fullData.map(d => d.pos);
+      const angle = fullData.map(d => d.ang1);
+
+      new Chart(document.getElementById("chart1").getContext("2d"), {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [
+            { label: "Crank Rate", data: crankRate, borderColor: "red", fill: false },
+            { label: "Wheel Rate", data: wheelRate, borderColor: "green", fill: false }
+          ]
+        },
+        options: { responsive: true, interaction: { mode: 'nearest' }, plugins: { legend: { display: true } } }
+      });
+
+      new Chart(document.getElementById("chart2").getContext("2d"), {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [
+            { label: "Gear Pos", data: pos, borderColor: "blue", fill: false },
+            { label: "Angle", data: angle, borderColor: "orange", fill: false }
+          ]
+        },
+        options: { responsive: true, interaction: { mode: 'nearest' }, plugins: { legend: { display: true } } }
       });
     }
   </script>

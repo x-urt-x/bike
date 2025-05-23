@@ -10,7 +10,7 @@
 #define WHEEL_HIGH_PIN D5
 #define DERAILLEUR_PIN A0
 #define BTN_PIN D4
-
+#define LED_PIN D0
 #define SEND_TIME_MS 2000
 
 #define POS1_2 350
