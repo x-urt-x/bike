@@ -11,6 +11,17 @@
 
 #include "pass.h" //  define in this file SSID and PASS of ur wifi
 
+struct Data {
+	uint16_t cranks_count;
+	uint16_t wheel_count;
+	char pos;
+	float ang1, ang2, ang3;
+} __attribute__((packed));
+
+alignas(4) uint32_t flash_buffer[SECTOR_SIZE / 4];
+
+File uploadFile;
+
 const char* ssid = SSID;
 const char* password = PASS;
 
@@ -37,6 +48,7 @@ VectorInt16 aaReal;     // [x, y, z]            gravity-free accel sensor measur
 VectorInt16 aaWorld;    // [x, y, z]            world-frame accel sensor measurements
 VectorFloat gravity;    // [x, y, z]            gravity vector
 
+#define TODEGR 180/M_PI
 float euler[3];
 
 volatile bool mpuInterrupt = false;
@@ -44,15 +56,103 @@ void ICACHE_RAM_ATTR dmpDataReady() {
 	mpuInterrupt = true;
 }
 
-struct Data
+uint8_t sector_buffer[SECTOR_SIZE];
+uint32_t current_sector = 0;
+uint16_t buffer_index = 0;
+uint32_t buffer_start_time = 0;
+
+void initBuffer() {
+	memset(sector_buffer, 0xFF, SECTOR_SIZE);
+	buffer_start_time = millis();
+	memcpy(sector_buffer, &buffer_start_time, sizeof(uint32_t));
+	buffer_index = 0;
+}
+
+void flushBuffer() {
+	if (buffer_index == 0) return;
+
+	uint32_t end_time = millis();
+	memcpy(sector_buffer + 4 + buffer_index * DATA_ENTRY_SIZE, &end_time, sizeof(uint32_t));
+	memcpy(sector_buffer + 4 + buffer_index * DATA_ENTRY_SIZE + 4, &SECTOR_KEY, sizeof(uint32_t));
+
+	uint32_t addr = USER_FLASH_START + current_sector * SECTOR_SIZE;
+	uint32_t sector_num = (addr - FLASH_BASE) / SECTOR_SIZE;
+
+	ESP.flashEraseSector(sector_num);
+	ESP.flashWrite(addr - FLASH_BASE, (uint32_t*)sector_buffer, SECTOR_SIZE / 4);
+
+	current_sector = (current_sector + 1) % MAX_SECTORS;
+	initBuffer();
+}
+
+void addDataEntry(const Data& entry) {
+	if (buffer_index >= MAX_DATA_ENTRIES) {
+		flushBuffer();
+	}
+	memcpy(sector_buffer + 4 + buffer_index * DATA_ENTRY_SIZE, &entry, DATA_ENTRY_SIZE);
+	buffer_index++;
+}
+
+void findLastSector() {
+	uint32_t last_time = 0;
+	current_sector = 0;
+	for (uint32_t i = 0; i < MAX_SECTORS; ++i) {
+		uint32_t addr = USER_FLASH_START + i * SECTOR_SIZE;
+		uint32_t start_time;
+		memcpy(&start_time, (void*)addr, sizeof(uint32_t));
+
+		if (start_time == 0xFFFFFFFF) continue;
+
+		if (start_time < last_time) {
+			current_sector = i;
+			break;
+		}
+		last_time = start_time;
+	}
+	initBuffer();
+}
+
+bool getSector(int offset, uint8_t* buffer)
 {
-	//Data() : cranks_count(0), wheel_count(0), pos(0) {}
-	uint16_t cranks_count;
-	uint16_t wheel_count;
-	char pos;
-	float ang1, ang2, ang3;
-};	
-int a = sizeof(Data);
+	if (!buffer) return false;
+
+	uint32_t index;
+	if (offset == 0)
+	{
+		// return the RAM buffer with appended timestamp and key
+		LOG_SECTOR("RAM buffer");
+		uint32_t now = millis();
+		memcpy(sector_buffer + 4 + buffer_index * DATA_ENTRY_SIZE, &now, 4);
+		memcpy(sector_buffer + 4 + buffer_index * DATA_ENTRY_SIZE + 4, &SECTOR_KEY, 4);
+		memcpy(buffer, sector_buffer, SECTOR_SIZE);
+		return true;
+	}
+	if (offset > 0) {
+		uint32_t base = current_sector + 1;
+		if (base >= MAX_SECTORS) base -= MAX_SECTORS;
+		index = base + offset - 1;
+		if (index >= MAX_SECTORS) index -= MAX_SECTORS;
+	}
+	else {
+		int32_t idx = (int32_t)current_sector + offset - 1;
+		if (idx < 0) idx += MAX_SECTORS;
+		index = (uint32_t)idx;
+	}
+
+	uint32_t addr = USER_FLASH_START + index * SECTOR_SIZE;
+	uint32_t flash_offset = addr - 0x40200000;
+
+	// boundary check
+	if (addr < USER_FLASH_START || addr + SECTOR_SIZE > USER_FLASH_END) {
+		LOG_SECTOR("Address out of valid range");
+		return false;
+	}
+
+	// important: cast to uint32_t* and size in 4-byte words
+	bool res = ESP.flashRead(flash_offset, (uint32_t*)buffer, SECTOR_SIZE / 4);
+	return res;
+}
+
 uint16_t cranks_count = 0;
 bool cranks_side = false; //false - lastc call was low. true - last call was high
 void ICACHE_RAM_ATTR cranks_low()
@@ -152,7 +252,7 @@ void mpu_setup()
 		LOG_MPU("DMP Initialization failed (code %d)\n", devStatus);
 	}
 }
-bool fs_setup() 
+bool fs_setup()
 {
 	if (!LittleFS.begin()) {
 		LOG_FS("error on LittleFS\n");
@@ -169,15 +269,58 @@ bool fs_setup()
 	return true;
 }
 
+void handleSector()
+{
+	int offset = server.arg("i").toInt();
+	if (getSector(offset, (uint8_t*)flash_buffer)) {
+		server.sendHeader("Content-Type", "application/octet-stream");
+		server.send_P(200, "application/octet-stream", (char*)flash_buffer, SECTOR_SIZE);
+	}
+	else
+		server.send(404, "text/plain", "Invalid sector");
+}
 void handleRoot() {
-	server.send(200, "text/plain", "server");
+	File file = LittleFS.open("/index.html", "r");
+	if (!file) {
+		server.send(404, "text/plain", "index.html not found");
+		return;
+	}
+	server.streamFile(file, "text/html");
+	file.close();
+}
+void handleUpload() {
+	HTTPUpload& upload = server.upload();
+	if (upload.status == UPLOAD_FILE_START) {
+		String filename = "/" + upload.filename;
+		uploadFile = LittleFS.open(filename, "w");
+	}
+	else if (upload.status == UPLOAD_FILE_WRITE) {
+		if (uploadFile) uploadFile.write(upload.buf, upload.currentSize);
+	}
+	else if (upload.status == UPLOAD_FILE_END) {
+		if (uploadFile) uploadFile.close();
+		server.sendHeader("Location", "/");
+		server.send(303);
+	}
 }
 
 void server_setup()
 {
 	server.begin();
-	server.on("/", handleRoot);
-	Serial.printf("HTTP server started\n");
+	server.on("/", HTTP_GET, handleRoot);
+	server.on("/sector", handleSector);
+	server.on("/upload", HTTP_GET, []() {
+		server.send(200, "text/html",
+		"<form method='POST' action='/upload' enctype='multipart/form-data'>"
+		"<input type='file' name='file'>"
+			"<input type='submit' value='Upload'></form>");
+		});
+
+	
+	server.on("/update", HTTP_POST, []() {
+		server.send(200, "text/plain", "Upload complete");
+		}, handleUpload);
+	LOG_HTTP("server started\n");
 }
 
 void connectOrStartAP() {
@@ -238,6 +381,7 @@ void setup()
 	pinMode(BTN_PIN, INPUT_PULLUP);
 	attachInterrupt(BTN_PIN, btn_func, CHANGE);
 
+	findLastSector();
 	if (!fs_setup()) return;
 
 	WiFi.mode(WIFI_OFF);
@@ -268,8 +412,8 @@ void mpu_loop()
 }
 void btnTick()
 {
-	if (!btn_state||(millis() - btn_last < BTN_TIMEOUT)) return;
-	do{
+	if (!btn_state || (millis() - btn_last < BTN_TIMEOUT)) return;
+	do {
 		if (btn_count == 1 && !(btn_press & 0x1))
 		{
 			LOG_BTN("single short\n");
@@ -321,7 +465,18 @@ void loop()
 	//Serial.printf("%d\n", analogRead(DERAILLEUR_PIN));
 	while ((int32_t)(now - next) >= 0)
 	{
-		Serial.printf("cranks: %d\twheel: %d\ttransmission: %d\n", cranks_count / 2, wheel_count / 2, getHall3());
+		//Serial.printf("cranks: %d\twheel: %d\ttransmission: %d\n", cranks_count / 2, wheel_count / 2, getHall3());
+		mpu.dmpGetQuaternion(&q, fifoBuffer);
+		mpu.dmpGetEuler(euler, &q);
+		Data d;
+		d.cranks_count = cranks_count / 2;
+		d.wheel_count = wheel_count / 2;
+		d.pos = getHall3();
+		d.ang1 = euler[0] * TODEGR;
+		d.ang2 = euler[1] * TODEGR;
+		d.ang3 = euler[2] * TODEGR;
+		addDataEntry(d);
+
 		cranks_count = 0;
 		wheel_count = 0;
 		next += SEND_TIME_MS;

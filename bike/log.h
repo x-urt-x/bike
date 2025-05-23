@@ -12,6 +12,8 @@
 #define LOG_BTN_ENABLE
 #define LOG_FS_ENABLE
 #define LOG_WIFI_ENABLE
+#define LOG_HTTP_ENABLE
+#define LOG_SECTOR_ENABLE
 
 #endif // LOG_USB_ENABLE
 
@@ -69,6 +71,18 @@
 #define LOG_WIFI(format, ...) Serial.printf(format, ##__VA_ARGS__)
 #else
 #define LOG_WIFI(format, ...) ;
+#endif
+
+#ifdef LOG_HTTP_ENABLE
+#define LOG_HTTP(format, ...) Serial.printf(format, ##__VA_ARGS__)
+#else
+#define LOG_HTTP(format, ...) ;
+#endif
+
+#ifdef LOG_SECTOR_ENABLE
+#define LOG_SECTOR(format, ...) Serial.printf(format, ##__VA_ARGS__)
+#else
+#define LOG_SECTOR(format, ...) ;
 #endif
 
 
