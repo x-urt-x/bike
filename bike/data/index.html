@@ -2,120 +2,92 @@
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>ESP8266 Flash Data Viewer</title>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <title>ESP8266 Flash Sector Viewer</title>
   <style>
     body { font-family: sans-serif; padding: 20px; }
-    canvas { max-width: 100%; margin-bottom: 40px; }
-    label, input { margin-right: 10px; }
+    label, input, button { margin: 10px 5px; font-size: 16px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+    th, td { border: 1px solid #aaa; padding: 4px 8px; text-align: center; }
+    #sectorNumber { font-weight: bold; margin-top: 10px; }
   </style>
 </head>
 <body>
-  <h1>Load Flash Data</h1>
-  <label>Forward sectors: <input type="number" id="forward" value="1" min="0" max="100"></label>
-  <label>Backwards sectors: <input type="number" id="backward" value="5" min="0" max="100"></label>
-  <button onclick="startLoading()">Load</button>
+  <h1>Flash Sector Viewer</h1>
 
-  <canvas id="chart1"></canvas>
-  <canvas id="chart2"></canvas>
+  <label>Sector index:
+    <input type="number" id="sectorInput" value="-1" min="-10000" max="10000">
+  </label>
+  <button onclick="loadSector()">Load Sector</button>
+
+  <div id="sectorNumber">Sector: -</div>
+  <table id="dataTable">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Cranks</th>
+        <th>Wheel</th>
+        <th>Pos</th>
+        <th>Ang1</th>
+        <th>Ang2</th>
+        <th>Ang3</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
 
   <script>
     const SECTOR_SIZE = 4096;
     const ENTRY_SIZE = 17;
     const HEADER_SIZE = 4;
-    const FOOTER_SIZE = 8;
-    const MAX_ENTRIES = 240;
     const SECTOR_KEY = 0xDEADBEEF;
 
-    let fullData = [];
+    async function loadSector() {
+      const index = parseInt(document.getElementById("sectorInput").value);
+      const response = await fetch(`/sector?i=${index}`);
+      if (!response.ok) return alert("Failed to fetch sector");
 
-    async function fetchSector(index) {
-      let response = await fetch(`/sector?i=${index}`);
-      if (!response.ok) return null;
-      let buffer = new Uint8Array(await response.arrayBuffer());
-      let view = new DataView(buffer.buffer);
+      const buffer = new Uint8Array(await response.arrayBuffer());
+      const view = new DataView(buffer.buffer);
 
-      let keyOffset = SECTOR_SIZE - 4;
-      let found = false;
-      for (let i = 0; i <= SECTOR_SIZE - 4; i += 4) {
-        if (view.getUint32(i, true) === SECTOR_KEY) {
-          keyOffset = i;
-          found = true;
-          break;
-        }
+      document.getElementById("sectorNumber").textContent = `Sector: ${view.getUint32(0, true)}`;
+
+      const tbody = document.querySelector("#dataTable tbody");
+      tbody.innerHTML = "";
+
+      let entryOffset = HEADER_SIZE;
+      let entryIndex = 0;
+
+      while (entryOffset + ENTRY_SIZE <= SECTOR_SIZE - 4) {
+        const marker = view.getUint32(entryOffset, true);
+        if (marker === SECTOR_KEY) break;
+
+        const cranks = view.getUint16(entryOffset, true);
+        const wheel = view.getUint16(entryOffset + 2, true);
+        const pos = view.getInt8(entryOffset + 4);
+        const ang1 = view.getFloat32(entryOffset + 5, true);
+        const ang2 = view.getFloat32(entryOffset + 9, true);
+        const ang3 = view.getFloat32(entryOffset + 13, true);
+
+        const row = document.createElement("tr");
+        row.innerHTML = `
+          <td>${++entryIndex}</td>
+          <td>${cranks}</td>
+          <td>${wheel}</td>
+          <td>${pos}</td>
+          <td>${ang1.toFixed(2)}</td>
+          <td>${ang2.toFixed(2)}</td>
+          <td>${ang3.toFixed(2)}</td>
+        `;
+        tbody.appendChild(row);
+
+        entryOffset += ENTRY_SIZE;
       }
-      if (!found) return null;
 
-      const startTime = view.getUint32(0, true);
-      const endTime = view.getUint32(keyOffset - 4, true);
-      const duration = endTime - startTime;
-      const step = duration / MAX_ENTRIES;
-
-      let result = [];
-      for (let i = 0; i < MAX_ENTRIES; i++) {
-        let offset = HEADER_SIZE + i * ENTRY_SIZE;
-        if (offset + ENTRY_SIZE > keyOffset - 4) break;
-
-        let cranks = view.getUint16(offset, true);
-        let wheel = view.getUint16(offset + 2, true);
-        let pos = view.getInt8(offset + 4);
-        let ang1 = view.getFloat32(offset + 5, true);
-        let ang2 = view.getFloat32(offset + 9, true);
-        let ang3 = view.getFloat32(offset + 13, true);
-        let t = endTime - (MAX_ENTRIES - i - 1) * 2000;
-
-        result.push({ t, cranks, wheel, pos, ang1, ang2, ang3 });
+      if (entryIndex === 0) {
+        const row = document.createElement("tr");
+        row.innerHTML = `<td colspan="7">No valid data found.</td>`;
+        tbody.appendChild(row);
       }
-      return result;
-    }
-
-    async function startLoading() {
-      fullData = [];
-      let forward = parseInt(document.getElementById("forward").value);
-      let backward = parseInt(document.getElementById("backward").value);
-      for (let i = -backward; i <= forward; i++) {
-        let sector = null;
-        let attempts = 0;
-        while (!sector && attempts < 3) {
-          sector = await fetchSector(i);
-          attempts++;
-        }
-        if (sector) fullData.push(...sector);
-      }
-      fullData.sort((a, b) => a.t - b.t);
-      plotGraphs();
-    }
-
-    function plotGraphs() {
-      const labels = fullData.map(d => (d.t - fullData[fullData.length - 1].t) / 1000);
-      const crankRate = fullData.map((d, i, arr) => i > 0 ? (d.cranks - arr[i - 1].cranks) / 2 : 0);
-      const wheelRate = fullData.map((d, i, arr) => i > 0 ? (d.wheel - arr[i - 1].wheel) / 2 : 0);
-      const pos = fullData.map(d => d.pos);
-      const angle = fullData.map(d => d.ang1);
-
-      new Chart(document.getElementById("chart1").getContext("2d"), {
-        type: 'line',
-        data: {
-          labels,
-          datasets: [
-            { label: "Crank Rate", data: crankRate, borderColor: "red", fill: false },
-            { label: "Wheel Rate", data: wheelRate, borderColor: "green", fill: false }
-          ]
-        },
-        options: { responsive: true, interaction: { mode: 'nearest' }, plugins: { legend: { display: true } } }
-      });
-
-      new Chart(document.getElementById("chart2").getContext("2d"), {
-        type: 'line',
-        data: {
-          labels,
-          datasets: [
-            { label: "Gear Pos", data: pos, borderColor: "blue", fill: false },
-            { label: "Angle", data: angle, borderColor: "orange", fill: false }
-          ]
-        },
-        options: { responsive: true, interaction: { mode: 'nearest' }, plugins: { legend: { display: true } } }
-      });
     }
   </script>
 </body>
