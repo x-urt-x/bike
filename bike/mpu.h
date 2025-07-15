@@ -6,8 +6,10 @@
 #include "MPU6050_6Axis_MotionApps20.h"
 #include "I2Cdev.h"
 #include "Wire.h"
+#include "led.h"
 
 extern MPU6050 mpu;
+extern float base_angle;
 
 // DMP control/status
 extern bool dmpReady;
@@ -25,12 +27,13 @@ extern VectorInt16 aaWorld;
 extern VectorFloat gravity;
 extern float euler[3];
 #define TODEGR 180/M_PI
+#define RAD_TO_INT16_SCALE (32767.0f / M_PI)
 
 extern volatile bool mpuInterrupt;
 void ICACHE_RAM_ATTR dmpDataReady();
 
 void mpu_setup();
-void mpu_loop();
+bool mpu_loop();
+void mpu_base();
 
 #endif
-

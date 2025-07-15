@@ -1,6 +1,7 @@
 #include "mpu.h"
 
 MPU6050 mpu;
+float base_angle = 0;
 
 bool dmpReady = false;
 uint8_t mpuIntStatus;
@@ -10,10 +11,6 @@ uint16_t fifoCount;
 uint8_t fifoBuffer[64];
 
 Quaternion q;
-VectorInt16 aa;
-VectorInt16 aaReal;
-VectorInt16 aaWorld;
-VectorFloat gravity;
 
 float euler[3];
 
@@ -58,10 +55,10 @@ void mpu_setup()
 	}
 }
 
-void mpu_loop()
+bool mpu_loop()
 {
-	if (!dmpReady) return;
-	if (!mpuInterrupt && fifoCount < packetSize) return;
+	if (!dmpReady) return false;
+	if (!mpuInterrupt && fifoCount < packetSize) return false;
 	mpuInterrupt = false;
 	mpuIntStatus = mpu.getIntStatus();
 	fifoCount = mpu.getFIFOCount();
@@ -76,4 +73,32 @@ void mpu_loop()
 		mpu.dmpGetQuaternion(&q, fifoBuffer);
 		mpu.dmpGetEuler(euler, &q);
 	}
+	return true;
+}
+
+void mpu_base()
+{
+	Led_cfg led_cfg;
+	led_cfg.cyc = true;
+	uint16_t mpu_led[] = { 80, 80, 80, 1000 };
+	led_cfg.timings = mpu_led;
+	led_cfg.timings_len = 4;
+
+	uint32_t start = millis();
+	uint32_t now = start;
+	while (now < start + 20000)
+	{
+		mpu_loop();
+		mpu.dmpGetQuaternion(&q, fifoBuffer);
+		mpu.dmpGetEuler(euler, &q);
+		delay(10);
+		LOG_MPU("base_angle unstable %f\n", euler[2]);
+		led(&led_cfg, now);
+		now = millis();
+	}
+	LOG_MPU("\n");
+	mpu.dmpGetQuaternion(&q, fifoBuffer);
+	mpu.dmpGetEuler(euler, &q);
+	base_angle = euler[2];
+	LOG_MPU("base_angle %f\n", base_angle);
 }

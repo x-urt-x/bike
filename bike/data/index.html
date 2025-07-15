@@ -2,92 +2,125 @@
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>ESP8266 Flash Sector Viewer</title>
-  <style>
-    body { font-family: sans-serif; padding: 20px; }
-    label, input, button { margin: 10px 5px; font-size: 16px; }
-    table { border-collapse: collapse; width: 100%; margin-top: 20px; }
-    th, td { border: 1px solid #aaa; padding: 4px 8px; text-align: center; }
-    #sectorNumber { font-weight: bold; margin-top: 10px; }
-  </style>
+  <title>ESP8266 Flash Data Viewer</title>
 </head>
 <body>
-  <h1>Flash Sector Viewer</h1>
 
-  <label>Sector index:
-    <input type="number" id="sectorInput" value="-1" min="-10000" max="10000">
-  </label>
-  <button onclick="loadSector()">Load Sector</button>
-
-  <div id="sectorNumber">Sector: -</div>
-  <table id="dataTable">
-    <thead>
-      <tr>
-        <th>#</th>
-        <th>Cranks</th>
-        <th>Wheel</th>
-        <th>Pos</th>
-        <th>Ang1</th>
-        <th>Ang2</th>
-        <th>Ang3</th>
-      </tr>
-    </thead>
-    <tbody></tbody>
-  </table>
 
   <script>
     const SECTOR_SIZE = 4096;
-    const ENTRY_SIZE = 17;
-    const HEADER_SIZE = 4;
+    const ENTRY_SIZE = 4; // bytes
+    const ENTRIES_PER_SECTOR = (SECTOR_SIZE-8) / ENTRY_SIZE;
     const SECTOR_KEY = 0xDEADBEEF;
+    const MARKER = 0xEEEEEEEE;
+    let start_sector;
+    let start_sector_number;
+    let start_index;
 
-    async function loadSector() {
-      const index = parseInt(document.getElementById("sectorInput").value);
-      const response = await fetch(`/sector?i=${index}`);
-      if (!response.ok) return alert("Failed to fetch sector");
+    const parsed_sectors = [];
 
-      const buffer = new Uint8Array(await response.arrayBuffer());
-      const view = new DataView(buffer.buffer);
+    async function loadSectorsCount(count) {
+      for (let i = 0; i < count; i++) {
+        const parsed = await loadSector(-i);
+        parsed_sectors.push(parsed);
+      }
+    }
 
-      document.getElementById("sectorNumber").textContent = `Sector: ${view.getUint32(0, true)}`;
+    async function loadSectorsFormStart() {
+      await ensureStartParams();
+      for (let i = 0;; i--) {
+        const parsed = await loadSector(i);
+        if(parsed.index == start_sector_number){
+          parsed.data.splice(0, start_sector_number-1);
+          return;
+        }
+        parsed_sectors.push(parsed);
+      }
+    }
+    
+    async function loadSector(pos) {
+      let attempts = 0;
+      let success = false;
+      while (attempts < 3) {
+        try {
+          const response = await fetch(`/sector?i=${pos}`);
+          if (!response.ok) {
+            attempts++;
+            continue;
+          }
 
-      const tbody = document.querySelector("#dataTable tbody");
-      tbody.innerHTML = "";
+          const arrayBuffer = await response.arrayBuffer();
+          if (arrayBuffer.byteLength !== SECTOR_SIZE) {
+            attempts++;
+            continue;
+          }
+          const uint32Buffer = new Uint32Array(arrayBuffer);
+          const parsed = parse(uint32Buffer);
+          if(parsed.data.length == 0){
+            console.warn(`Invalid or missing DEADBEEF in sector ${parsed.index}`);
+          }
+          return parsed;
 
-      let entryOffset = HEADER_SIZE;
-      let entryIndex = 0;
-
-      while (entryOffset + ENTRY_SIZE <= SECTOR_SIZE - 4) {
-        const marker = view.getUint32(entryOffset, true);
-        if (marker === SECTOR_KEY) break;
-
-        const cranks = view.getUint16(entryOffset, true);
-        const wheel = view.getUint16(entryOffset + 2, true);
-        const pos = view.getInt8(entryOffset + 4);
-        const ang1 = view.getFloat32(entryOffset + 5, true);
-        const ang2 = view.getFloat32(entryOffset + 9, true);
-        const ang3 = view.getFloat32(entryOffset + 13, true);
-
-        const row = document.createElement("tr");
-        row.innerHTML = `
-          <td>${++entryIndex}</td>
-          <td>${cranks}</td>
-          <td>${wheel}</td>
-          <td>${pos}</td>
-          <td>${ang1.toFixed(2)}</td>
-          <td>${ang2.toFixed(2)}</td>
-          <td>${ang3.toFixed(2)}</td>
-        `;
-        tbody.appendChild(row);
-
-        entryOffset += ENTRY_SIZE;
+        } catch (e) {
+          console.warn(`Error loading sector ${pos}, attempt ${attempts + 1}`, e);
+          attempts++;
+        }
       }
 
-      if (entryIndex === 0) {
-        const row = document.createElement("tr");
-        row.innerHTML = `<td colspan="7">No valid data found.</td>`;
-        tbody.appendChild(row);
+      if (!success) {
+        console.warn(`Failed to load sector ${pos} after 3 attempts`);
       }
+    }
+
+    async function ensureStartParams() {
+      if (typeof start_sector === 'undefined' || typeof start_index === 'undefined' || typeof start_sector_number === 'undefined') {
+        try {
+          const response = await fetch('/start_params');
+          if (!response.ok) throw new Error('Network response was not ok');
+
+          const data = await response.json();
+          start_sector = data.start_sector;
+          start_index = data.start_index;
+          start_sector_number = data.start_sector_number;
+        } catch (error) {
+          console.error('Failed to fetch start parameters:', error);
+        }
+      }
+    }
+
+    function unpackWithAngleDeg(packed) {
+      const crank =  packed         & 0x3F;         // 6
+      const wheel = (packed >> 6)  & 0x3F;          // 6
+      const pos   = (packed >> 12) & 0x0F;          // 4
+      let angle   = (packed >>> 16) & 0xFFFF;       // 16 as uint
+
+      if (angle & 0x8000) {
+          angle -= 0x10000;
+      }
+
+      const angleDeg = (angle / 32767.0) * 180.0;
+
+      return { crank, wheel, pos, angleDeg };
+    }
+
+    function parse(raw) {
+      const index = raw[0];
+      const result = [];
+
+      for (let i = 1; i < raw.length; i++) {
+        if (raw[i] === SECTOR_KEY) {
+          return { index, data: result };
+        }
+        if (raw[i] === MARKER) {
+          result.push(unpackWithAngleDeg({}));
+          continue;
+        }
+
+        result.push(unpackWithAngleDeg(raw[i]));
+      }
+
+      // if no DEADBEEF key found, treat as invalid
+      return { index, data: [] };
     }
   </script>
 </body>

@@ -94,6 +94,14 @@ void server_setup()
 		server.send(200, "text/plain", "Upload complete");
 		LOG_HTTP("upload init\n");
 		}, handleUpload);
+	server.on("/start_params", HTTP_GET, []() {
+		server.send(200, "application/json",
+		String(
+			"{\"start_sector\":") + start_sector +
+		",\"start_index\":" + start_index + 
+		",\"start_index_number\":" + start_sector_number +
+			"}");
+		});
 	LOG_HTTP("server started\n");
 }
 

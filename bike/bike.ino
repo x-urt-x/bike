@@ -1,3 +1,4 @@
+#include "led.h"
 #include "log.h"
 
 #include "config.h"
@@ -6,7 +7,6 @@
 #include "mpu.h"
 #include "server.h"
 #include "mem.h"
-
 
 void setup()
 {
@@ -26,16 +26,15 @@ void setup()
 
 	WiFi.mode(WIFI_OFF);
 	WiFi.forceSleepBegin();
-	delay(1);
-
+	mpu_base();
 	server_setup();
-	delay(100);
-	connectOrStartAP();
+	//connectOrStartAP();
 }
 
 unsigned long next;
 void loop()
 {
+	//Serial.printf("pos %d raw %d\n", getHall3(), analogRead(DERAILLEUR_PIN));
 	server.handleClient();
 	mpu_loop();
 	btnTick();
@@ -44,23 +43,11 @@ void loop()
 	{
 		mpu.dmpGetQuaternion(&q, fifoBuffer);
 		mpu.dmpGetEuler(euler, &q);
-		Data d;
-		d.cranks_count = cranks_count / 2;
-		d.wheel_count = wheel_count / 2;
-		d.pos = getHall3();
-		d.ang1 = euler[0] * TODEGR;
-		d.ang2 = euler[1] * TODEGR;
-		d.ang3 = euler[2] * TODEGR;
-		addDataEntry(d);
-		addDataEntry(d);
-		addDataEntry(d);
-		addDataEntry(d);
-		addDataEntry(d);
-		addDataEntry(d);
-		addDataEntry(d);
-		addDataEntry(d);
-		addDataEntry(d);
-		addDataEntry(d);
+		float angle = euler[2] - base_angle;
+		if (angle > M_PI) angle -= 2 * M_PI;
+		if (angle < M_PI) angle += 2 * M_PI;
+
+		addDataEntry(pack(cranks_count / 2, wheel_count / 2, getHall3(), (int16_t)(angle * RAD_TO_INT16_SCALE)));
 
 		cranks_count = 0;
 		wheel_count = 0;
